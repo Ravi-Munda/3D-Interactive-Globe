@@ -1,0 +1,620 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tactile Interactive 3D Globe</title>
+<script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+<style>
+  :root{
+    --bg:#040810;
+    --panel:#0d1b2a;
+    --land:#4fc3f7;
+    --ocean:#0d1b2a;
+    --text:#e8f1f8;
+    --muted:#7f97ac;
+    --accent:#f4a623;
+    --accent-dim:#7a5417;
+    --line:#16283b;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin:0; padding:0; height:100%;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    overflow: hidden;
+  }
+  #stage { position: relative; width: 100vw; height: 100vh; }
+  #globe { position:absolute; inset:0; }
+
+  #hud {
+    position:absolute; top:0; left:0; right:0;
+    display:flex; align-items:center; justify-content:space-between;
+    padding: 18px 22px;
+    pointer-events:none;
+    z-index: 10;
+  }
+  #hud h1 {
+    font-size: 15px; font-weight: 600; letter-spacing: 0.2px;
+    margin:0; color: var(--text);
+  }
+  #hud p { margin: 2px 0 0; font-size: 12px; color: var(--muted); }
+
+  #controls {
+    position:absolute; bottom:0; left:0; right:0;
+    display:flex; align-items:center; gap:16px;
+    padding: 16px 22px 20px;
+    background: linear-gradient(to top, rgba(4,8,16,0.95), transparent);
+    z-index: 10;
+  }
+
+  button#camBtn {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    color: var(--text);
+    padding: 9px 16px;
+    border-radius: 8px;
+    font-size: 13px;
+    cursor: pointer;
+    transition: border-color .15s ease, background .15s ease, transform .1s ease;
+  }
+  button#camBtn:hover { border-color: var(--accent-dim); }
+  button#camBtn:active { transform: scale(0.98); }
+  button#camBtn.active { background: #14283a; border-color: var(--accent); color: var(--accent); }
+
+  #status { font-size: 12px; color: var(--muted); min-width: 250px; }
+  #status.warn { color: var(--accent); }
+
+  #pinchWrap {
+    display:flex; align-items:center; gap:10px;
+    flex: 1; max-width: 360px;
+  }
+  #pinchTrack {
+    position:relative; flex:1; height: 6px; border-radius: 3px;
+    background: var(--line); overflow:hidden;
+  }
+  #pinchFill {
+    position:absolute; left:0; top:0; bottom:0; width: 30%;
+    background: var(--accent); border-radius: 3px;
+    transition: width .08s ease-out;
+  }
+  #zoomVal { font-size: 12px; color: var(--muted); width: 54px; text-align:right; }
+
+  #manualZoom {
+    -webkit-appearance: none; appearance: none; width: 130px; height: 4px;
+    background: var(--line); border-radius: 2px; outline:none;
+  }
+  #manualZoom::-webkit-slider-thumb {
+    -webkit-appearance: none; width: 13px; height: 13px; border-radius: 50%;
+    background: var(--accent); cursor:pointer;
+  }
+
+  #camPip {
+    position:absolute; bottom: 78px; right: 22px;
+    width: 168px; height: 126px;
+    border-radius: 10px; overflow: hidden;
+    border: 1px solid var(--line);
+    background: #000;
+    display:none;
+    z-index: 10;
+  }
+  #camPip.show { display:block; }
+  #camPip video, #camPip canvas {
+    position:absolute; top:0; left:0; width:100%; height:100%;
+    transform: scaleX(-1);
+  }
+
+  #hint {
+    position:absolute; bottom: 78px; left: 22px;
+    font-size: 11px; color: var(--muted);
+    max-width: 250px; line-height:1.5;
+    display:none;
+    z-index: 10;
+  }
+  #hint.show { display:block; }
+</style>
+</head>
+<body>
+
+<div id="stage">
+  <div id="globe"></div>
+
+  <div id="hud">
+    <div>
+      <h1>World, live</h1>
+      <p>Move Hand: Rotate &middot; Hold Still: Freeze &middot; Hand In/Out: Zoom &middot; <strong>Fist: Instant Stop</strong></p>
+    </div>
+  </div>
+
+  <div id="hint">Raise your hand in front of the camera to control the globe.</div>
+
+  <div id="camPip"><video id="video" playsinline muted></video><canvas id="overlay"></canvas></div>
+
+  <div id="controls">
+    <button id="camBtn">Enable hand tracking</button>
+    <div id="status">Camera off — drag/scroll the globe, or use the slider.</div>
+    <div id="pinchWrap">
+      <div id="pinchTrack"><div id="pinchFill"></div></div>
+      <div id="zoomVal">1.00&times;</div>
+    </div>
+    <input id="manualZoom" type="range" min="0.5" max="3" step="0.01" value="1">
+  </div>
+</div>
+
+<script>
+/* ---------- country data ---------- */
+const COUNTRIES = `AF|AFG|Afghanistan
+AL|ALB|Albania
+DZ|DZA|Algeria
+AD|AND|Andorra
+AO|AGO|Angola
+AG|ATG|Antigua and Barbuda
+AR|ARG|Argentina
+AM|ARM|Armenia
+AU|AUS|Australia
+AT|AUT|Austria
+AZ|AZE|Azerbaijan
+BS|BHS|Bahamas
+BH|BHR|Bahrain
+BD|BGD|Bangladesh
+BB|BRB|Barbados
+BY|BLR|Belarus
+BE|BEL|Belgium
+BZ|BLZ|Belize
+BJ|BEN|Benin
+BT|BTN|Bhutan
+BO|BOL|Bolivia
+BA|BIH|Bosnia and Herzegovina
+BW|BWA|Botswana
+BR|BRA|Brazil
+BN|BRN|Brunei
+BG|BGR|Bulgaria
+BF|BFA|Burkina Faso
+BI|BDI|Burundi
+CV|CPV|Cabo Verde
+KH|KHM|Cambodia
+CM|CMR|Cameroon
+CA|CAN|Canada
+CF|CAF|Central African Republic
+TD|TCD|Chad
+CL|CHL|Chile
+CN|CHN|China
+CO|COL|Colombia
+KM|COM|Comoros
+CG|COG|Congo
+CD|COD|DR Congo
+CR|CRI|Costa Rica
+CI|CIV|Cote d'Ivoire
+HR|HRV|Croatia
+CU|CUB|Cuba
+CY|CYP|Cyprus
+CZ|CZE|Czechia
+DK|DNK|Denmark
+DJ|DJI|Djibouti
+DM|DMA|Dominica
+DO|DOM|Dominican Republic
+EC|ECU|Ecuador
+EG|EGY|Egypt
+SV|SLV|El Salvador
+GQ|GNQ|Equatorial Guinea
+ER|ERI|Eritrea
+EE|EST|Estonia
+SZ|SWZ|Eswatini
+ET|ETH|Ethiopia
+FJ|FJI|Fiji
+FI|FIN|Finland
+FR|FRA|France
+GA|GAB|Gabon
+GM|GMB|Gambia
+GE|GEO|Georgia
+DE|DEU|Germany
+GH|GHA|Ghana
+GR|GRC|Greece
+GD|GRD|Grenada
+GT|GTM|Guatemala
+GN|GIN|Guinea
+GW|GNB|Guinea-Bissau
+GY|GUY|Guyana
+HT|HTI|Haiti
+HN|HND|Honduras
+HU|HUN|Hungary
+IS|ISL|Iceland
+IN|IND|India
+ID|IDN|Indonesia
+IR|IRN|Iran
+IQ|IRQ|Iraq
+IE|IRL|Ireland
+IL|ISR|Israel
+IT|ITA|Italy
+JM|JAM|Jamaica
+JP|JPN|Japan
+JO|JOR|Jordan
+KZ|KAZ|Kazakhstan
+KE|KEN|Kenya
+KI|KIR|Kiribati
+KP|PRK|North Korea
+KR|KOR|South Korea
+KW|KWT|Kuwait
+KG|KGZ|Kyrgyzstan
+LA|LAO|Laos
+LV|LVA|Latvia
+LB|LBN|Lebanon
+LS|LSO|Lesotho
+LR|LBR|Liberia
+LY|LBY|Libya
+LI|LIE|Liechtenstein
+LT|LTU|Lithuania
+LU|LUX|Luxembourg
+MG|MDG|Madagascar
+MW|MWI|Malawi
+MY|MYS|Malaysia
+MV|MDV|Maldives
+ML|MLI|Mali
+MT|MLT|Malta
+MH|MHL|Marshall Islands
+MR|MRT|Mauritania
+MU|MUS|Mauritius
+MX|MEX|Mexico
+FM|FSM|Micronesia
+MD|MDA|Moldova
+MC|MCO|Monaco
+MN|MNG|Mongolia
+ME|MNE|Montenegro
+MA|MAR|Morocco
+MZ|MOZ|Mozambique
+MM|MMR|Myanmar
+NA|NAM|Namibia
+NR|NRU|Nauru
+NP|NPL|Nepal
+NL|NLD|Netherlands
+NZ|NZL|New Zealand
+NI|NIC|Nicaragua
+NE|NER|Niger
+NG|NGA|Nigeria
+MK|MKD|North Macedonia
+NO|NOR|Norway
+OM|OMN|Oman
+PK|PAK|Pakistan
+PW|PLW|Palau
+PA|PAN|Panama
+PG|PNG|Papua New Guinea
+PY|PRY|Paraguay
+PE|PER|Peru
+PH|PHL|Philippines
+PL|POL|Poland
+PT|PRT|Portugal
+QA|QAT|Qatar
+RO|ROU|Romania
+RU|RUS|Russia
+RW|RWA|Rwanda
+KN|KNA|Saint Kitts and Nevis
+LC|LCA|Saint Lucia
+VC|VCT|Saint Vincent and the Grenadines
+WS|WSM|Samoa
+SM|SMR|San Marino
+ST|STP|Sao Tome and Principe
+SA|SAU|Saudi Arabia
+SN|SEN|Senegal
+RS|SRB|Serbia
+SC|SYC|Seychelles
+SL|SLE|Sierra Leone
+SG|SGP|Singapore
+SK|SVK|Slovakia
+SI|SVN|Slovenia
+SB|SLB|Solomon Islands
+SO|SOM|Somalia
+ZA|ZAF|South Africa
+SS|SSD|South Sudan
+ES|ESP|Spain
+LK|LKA|Sri Lanka
+SD|SDN|Sudan
+SR|SUR|Suriname
+SE|SWE|Sweden
+CH|CHE|Switzerland
+SY|SYR|Syria
+TW|TWN|Taiwan
+TJ|TJK|Tajikistan
+TZ|TZA|Tanzania
+TH|THA|Thailand
+TL|TLS|Timor-Leste
+TG|TGO|Togo
+TO|TON|Tonga
+TT|TTO|Trinidad and Tobago
+TN|TUN|Tunisia
+TR|TUR|Turkiye
+TM|TKM|Turkmenistan
+TV|TUV|Tuvalu
+UG|UGA|Uganda
+UA|UKR|Ukraine
+AE|ARE|United Arab Emirates
+GB|GBR|United Kingdom
+US|USA|United States
+UY|URY|Uruguay
+UZ|UZB|Uzbekistan
+VU|VUT|Vanuatu
+VA|VAT|Vatican City
+VE|VEN|Venezuela
+VN|VNM|Vietnam
+YE|YEM|Yemen
+ZM|ZMB|Zambia
+ZW|ZWE|Zimbabwe`.trim().split("\n").map(l => l.split("|"));
+
+function flagEmoji(iso2) {
+  return [...iso2.toUpperCase()].map(c => String.fromCodePoint(127397 + c.charCodeAt(0))).join("");
+}
+
+const locations = COUNTRIES.map(c => c[1]);
+const hoverText = COUNTRIES.map(c => `${flagEmoji(c[0])}  ${c[2]}`);
+
+/* ---------- globe initialization ---------- */
+const trace = {
+  type: "choropleth",
+  locations,
+  z: locations.map(() => 1),
+  text: hoverText,
+  hoverinfo: "text",
+  colorscale: [[0, "#039BE5"], [1, "#039BE5"]],
+  showscale: false,
+  marker: { line: { color: "white", width: 0.5 } }
+};
+
+const layout = {
+  geo: {
+    projection: { type: "orthographic", scale: 1 },
+    showcountries: true,
+    countrycolor: "white",
+    showland: true,
+    landcolor: "#4FC3F7",
+    showocean: true,
+    oceancolor: "#0D1B2A",
+    showcoastlines: true,
+    coastlinecolor: "white",
+    bgcolor: "rgba(0,0,0,0)"
+  },
+  margin: { l: 0, r: 0, t: 0, b: 0 },
+  paper_bgcolor: "rgba(0,0,0,0)",
+  font: { color: "#e8f1f8" }
+};
+
+Plotly.newPlot("globe", [trace], layout, {
+  displayModeBar: false,
+  scrollZoom: true,
+  responsive: true
+});
+
+/* ---------- Engine & State ---------- */
+let currentScale = 1, targetScale = 1;
+const SCALE_MIN = 0.5, SCALE_MAX = 3;
+
+let currentLon = 0, currentLat = 0, currentRoll = 0;
+let velLon = 0, velLat = 0, velRoll = 0;
+
+const LAT_MIN = -89, LAT_MAX = 89;
+const MOVE_THRESHOLD = 0.0025; // Deadzone threshold for stopping
+
+let prevPalmX = null, prevPalmY = null, prevHandAngle = null;
+let isUserInteracting = false;
+let smoothedHandSize = null;
+
+function updatePhysicsLoop() {
+  let needsUpdate = false;
+
+  if (Math.abs(currentScale - targetScale) > 0.001) {
+    currentScale += (targetScale - currentScale) * 0.15;
+    needsUpdate = true;
+  }
+
+  if (needsUpdate || isUserInteracting) {
+    applyGlobeTransform();
+  }
+
+  requestAnimationFrame(updatePhysicsLoop);
+}
+requestAnimationFrame(updatePhysicsLoop);
+
+function applyGlobeTransform() {
+  document.getElementById("zoomVal").textContent = currentScale.toFixed(2) + "\u00d7";
+  const pct = (currentScale - SCALE_MIN) / (SCALE_MAX - SCALE_MIN) * 100;
+  document.getElementById("pinchFill").style.width = pct + "%";
+
+  Plotly.relayout("globe", {
+    "geo.projection.scale": currentScale,
+    "geo.projection.rotation.lon": currentLon,
+    "geo.projection.rotation.lat": currentLat,
+    "geo.projection.rotation.roll": currentRoll
+  });
+}
+
+const manualZoom = document.getElementById("manualZoom");
+manualZoom.addEventListener("input", e => {
+  targetScale = parseFloat(e.target.value);
+});
+
+/* ---------- Hand tracking & gesture processing ---------- */
+const video = document.getElementById("video");
+const overlay = document.getElementById("overlay");
+const octx = overlay.getContext("2d");
+const statusEl = document.getElementById("status");
+const hintEl = document.getElementById("hint");
+const camPip = document.getElementById("camPip");
+const camBtn = document.getElementById("camBtn");
+
+function dist2D(a, b) {
+  return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+function getHandGesture(lm) {
+  const wrist = lm[0];
+  const fingerTips = [8, 12, 16, 20];
+  const fingerPips = [6, 10, 14, 18];
+
+  const extended = fingerTips.map((tipIdx, i) => {
+    return dist2D(lm[tipIdx], wrist) > dist2D(lm[fingerPips[i]], wrist);
+  });
+  
+  const [indexOpen, middleOpen, ringOpen, pinkyOpen] = extended;
+  const thumbClosed = dist2D(lm[4], lm[5]) < dist2D(lm[3], lm[5]);
+
+  if (!indexOpen && !middleOpen && !ringOpen && !pinkyOpen && thumbClosed) {
+    return "FIST";
+  }
+
+  if (middleOpen || ringOpen || pinkyOpen) {
+    return "OPEN_HAND";
+  }
+
+  return "UNKNOWN";
+}
+
+function onResults(results) {
+  overlay.width = overlay.clientWidth;
+  overlay.height = overlay.clientHeight;
+  octx.clearRect(0, 0, overlay.width, overlay.height);
+
+  if (!results.multiHandLandmarks || results.multiHandLandmarks.length === 0) {
+    hintEl.classList.add("show");
+    isUserInteracting = false;
+    resetTrackingData();
+    return;
+  }
+  hintEl.classList.remove("show");
+
+  const lm = results.multiHandLandmarks[0];
+
+  if (window.drawConnectors) {
+    drawConnectors(octx, lm, Hands.HAND_CONNECTIONS, { color: "#4fc3f7", lineWidth: 1.5 });
+    drawLandmarks(octx, [lm[0], lm[9]], { color: "#f4a623", radius: 3 });
+  }
+
+  const gesture = getHandGesture(lm);
+
+  if (gesture === "FIST") {
+    statusEl.textContent = "Fist — STOPPED";
+    statusEl.classList.add("warn");
+    velLon = 0; velLat = 0; velRoll = 0;
+    isUserInteracting = false;
+    resetTrackingData();
+    return;
+  }
+
+  if (gesture === "OPEN_HAND") {
+    isUserInteracting = true;
+
+    const handSize = dist2D(lm[0], lm[9]);
+    smoothedHandSize = smoothedHandSize === null ? handSize : smoothedHandSize + 0.15 * (handSize - smoothedHandSize);
+
+    const SIZE_MIN = 0.18, SIZE_MAX = 0.45;
+    const t = Math.max(0, Math.min(1, (smoothedHandSize - SIZE_MIN) / (SIZE_MAX - SIZE_MIN)));
+    targetScale = SCALE_MIN + t * (SCALE_MAX - SCALE_MIN);
+    manualZoom.value = targetScale.toFixed(2);
+
+    const palmX = 1 - lm[0].x;
+    const palmY = lm[0].y;
+    
+    if (prevPalmX !== null && prevPalmY !== null) {
+      const deltaX = palmX - prevPalmX;
+      const deltaY = palmY - prevPalmY;
+      const movementMag = Math.hypot(deltaX, deltaY);
+
+      // Lock rotation instantly if hand movement falls within the deadzone threshold
+      if (movementMag > MOVE_THRESHOLD) {
+        currentLon += (prevPalmX - palmX) * 260;
+        currentLat = Math.max(LAT_MIN, Math.min(LAT_MAX, currentLat + (palmY - prevPalmY) * 260));
+        statusEl.textContent = `Open Palm — Moving Globe`;
+      } else {
+        statusEl.textContent = `Open Palm — Hand Stationary (Globe Frozen)`;
+      }
+    }
+
+    const handAngle = Math.atan2(lm[9].y - lm[0].y, (lm[0].x - lm[9].x)) * 180 / Math.PI;
+    if (prevHandAngle !== null) {
+      let rawDAngle = handAngle - prevHandAngle;
+      if (rawDAngle > 180) rawDAngle -= 360;
+      if (rawDAngle < -180) rawDAngle += 360;
+
+      if (Math.abs(rawDAngle) > 0.8) {
+        currentRoll -= rawDAngle * 1.2;
+      }
+    }
+
+    statusEl.classList.remove("warn");
+    prevPalmX = palmX;
+    prevPalmY = palmY;
+    prevHandAngle = handAngle;
+    return;
+  }
+
+  statusEl.textContent = "Hand detected";
+  statusEl.classList.remove("warn");
+  isUserInteracting = false;
+  resetTrackingData();
+}
+
+function resetTrackingData() {
+  prevPalmX = null;
+  prevPalmY = null;
+  prevHandAngle = null;
+  smoothedHandSize = null;
+}
+
+let handsInstance = null;
+let cameraInstance = null;
+let tracking = false;
+
+async function startTracking() {
+  statusEl.textContent = "Requesting camera permission…";
+  try {
+    handsInstance = new Hands({
+      locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+    });
+    handsInstance.setOptions({
+      maxNumHands: 1,
+      modelComplexity: 1,
+      minDetectionConfidence: 0.65,
+      minTrackingConfidence: 0.65
+    });
+    handsInstance.onResults(onResults);
+
+    cameraInstance = new Camera(video, {
+      onFrame: async () => { await handsInstance.send({ image: video }); },
+      width: 320,
+      height: 240
+    });
+    await cameraInstance.start();
+
+    tracking = true;
+    camPip.classList.add("show");
+    camBtn.textContent = "Stop hand tracking";
+    camBtn.classList.add("active");
+    statusEl.textContent = "Tracking active";
+    statusEl.classList.remove("warn");
+  } catch (err) {
+    statusEl.textContent = "Camera unavailable — drag/scroll manually.";
+    statusEl.classList.add("warn");
+    tracking = false;
+  }
+}
+
+function stopTracking() {
+  if (cameraInstance) cameraInstance.stop();
+  tracking = false;
+  isUserInteracting = false;
+  resetTrackingData();
+  camPip.classList.remove("show");
+  hintEl.classList.remove("show");
+  camBtn.textContent = "Enable hand tracking";
+  camBtn.classList.remove("active");
+  statusEl.textContent = "Camera off — drag/scroll the globe, or use the slider.";
+  statusEl.classList.remove("warn");
+}
+
+camBtn.addEventListener("click", () => {
+  if (tracking) stopTracking(); else startTracking();
+});
+</script>
+</body>
+</html>
