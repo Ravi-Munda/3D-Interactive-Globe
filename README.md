@@ -1,3 +1,3 @@
-# 3D-Interactive-Globe
-A fun interactive 3D Interactive Globe controlled by Hand Gesture
+# Tactile-Interactive-3D-Globe
+A fun Tactile Interactive 3D Globe controlled by Hand Gesture
 https://ravi-munda.github.io/3D-Interactive-Globe/
